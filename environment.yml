@@ -49,6 +49,7 @@ dependencies:
       - nvidia-nvtx-cu12==12.4.127
       - pandas==2.2.3
       - py4j==0.10.9.7
+      - pyarrow==19.0.1
       - pyspark==3.5.5
       - python-dateutil==2.9.0.post0
       - pytz==2025.1

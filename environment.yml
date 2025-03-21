@@ -25,9 +25,14 @@ dependencies:
   - readline=8.2=h8c095d6_2
   - setuptools=75.8.2=pyhff2d567_0
   - tk=8.6.13=noxft_h4845f30_101
-  - tzdata=2025a=h78e105d_0
   - wheel=0.45.1=pyhd8ed1ab_1
   - pip:
+      - numpy==2.2.4
+      - pandas==2.2.3
       - py4j==0.10.9.7
       - pyspark==3.5.5
+      - python-dateutil==2.9.0.post0
+      - pytz==2025.1
+      - six==1.17.0
+      - tzdata==2025.1
 prefix: ~/miniforge3/shell/condabin/conda/envs/spark

@@ -10,7 +10,9 @@ from torch.utils.data import Dataset, DataLoader
 import glob
 from petastorm.spark import SparkDatasetConverter, make_spark_converter
 
-# Opens and manages pyspark context, will run on localhost
+# Opens and manages pyspark context, will run on localhost.
+# Essentially just a wrapper class to run pyspark and do config
+# without cluttering main
 class SparkManager:
     def __init__(self, name:str, master:str='local', cache_dir:os.PathLike='cache'):
         cache_dir = Path(cache_dir)
@@ -23,20 +25,23 @@ class SparkManager:
             .config(SparkDatasetConverter.PARENT_CACHE_DIR_URL_CONF, f"file://{cache_dir}")
             .getOrCreate()
         )
-        
+    
+    # These are python dunders that are executed with the with statement
+    # It just handles shutting down the context manager and declutters main
     def __enter__(self) -> SparkSession:
         return self.context
          
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.context.stop()
        
-       
+# Makes a spark DF from a csv path
 def read_csv(sc: SparkSession, path: os.PathLike):
     path = str(path)
     
     df = sc.read.csv(path=path, inferSchema=True, header=True)
     return df
 
+# Makes a spark DF from an images path
 def read_images(sc: SparkSession, path: os.PathLike):
     path = str(path)
     
@@ -63,16 +68,18 @@ if __name__ == '__main__':
         csv.printSchema()
                 
         # Example from images
-        images = read_images(sc, Path('data/images/images/El_Greco/*'))
+        images = read_images(sc, Path('data/resized/resized/**'))
         
         # Turns struct values into columns
         images = images.select('image.*')
         images.show(10)        
         images.printSchema()
         
+        # Train/test split for images
         images_train, images_val = images.randomSplit([.9, .1])
         convert_train, convert_val = make_spark_converter(images_train), make_spark_converter(images_val)
         
+        # Petastorm dataloaders for distributed processing
         trainloader = convert_train.make_torch_dataloader(batch_size=16)
         valloader = convert_val.make_torch_dataloader(batch_size=16)
         

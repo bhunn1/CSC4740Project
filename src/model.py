@@ -158,11 +158,11 @@ class Denoiser(nn.Module):
         return x
         
     def save_weights(self):
-        with open(Path('weights') / Path('unet_weights.pth')) as file:
+        with open(Path('weights') / Path('unet_weights.pth'), 'w') as file:
             torch.save(self.state_dict(), f=file)
         
     def load_weights(self):
-        with open(Path('weight') / Path('unet-weights.pth')) as file:
+        with open(Path('weight') / Path('unet-weights.pth'), 'r') as file:
             state_dict = torch.load(file, weights_only=True)
             
         self.load_state_dict(state_dict)
@@ -193,13 +193,56 @@ def train_one_epoch(model: nn.Module,
     scheduler.step(total_loss)
     return total_loss
     
-def train_generative(dataloader, epochs=100):
-    model = Denoiser()
-    diffuser = ForwardDiffusion()
-    optim = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
-    loss_fn = nn.MSELoss()
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, patience=5)
+def save_training_checkpoint(model, optim, scheduler, epoch):
+    model_state_dict = model.state_dict()
+    optim_state_dict = optim.state_dict()
+    scheduler_state_dict = scheduler.state_dict()
     
+    state = {
+        'epoch':epoch,
+        'model_state_dict':model_state_dict,
+        'optim_state_dict':optim_state_dict,
+        'scheduler_state_dict':scheduler_state_dict
+    }
+    
+    path = Path('weights') / Path('unet-training-checkpoint.pth')
+    with open(path, 'w') as file:
+        torch.save(state, f=file)
+    
+def load_training_checkpoint():
+    path = Path('weights') / Path('unet-training-checkpoint.pth')
+    with open(path, 'r') as file:
+        state = torch.load(f=file)
+    
+    model = Denoiser()
+    model.load_state_dict(
+        state['model_state_dict']
+    )
+    optim = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
+    optim.load_state_dict(
+        state['optim_state_dict']
+    )
+
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, patience=5)
+    scheduler.load_state_dict(
+        state['scheduler_state_dict']
+    )
+    return model, optim, scheduler, state['epoch']
+    
+    
+def train_generative(dataloader, epochs=100, load_checkpoint=False, save_checkpoint=True):
+    if load_checkpoint:
+        model, optim, scheduler, epoch_count = load_training_checkpoint()
+    else:
+        model = Denoiser()
+        optim = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, patience=5)
+        epoch_count = epochs
+    
+    diffuser = ForwardDiffusion()
+    loss_fn = nn.MSELoss()
+    
+    model.train()
     time_start = time()
     print("Starting training")
     for epoch in range(epochs):
@@ -209,8 +252,10 @@ def train_generative(dataloader, epochs=100):
         
         print(f"Epoch {epoch + 1}: Loss {epoch_loss}, Epoch Time {round(time_end - epoch_time_start, 2)}, Running Time {round(time_end - time_start, 2)}")
     
-    model.save_weights()        
-
+    model.save_weights()     
+    if save_checkpoint:   
+        save_training_checkpoint(model=model, optim=optim, scheduler=scheduler, epoch=epoch_count)
+    
 class DummyDataset(torch.utils.data.Dataset):
     def __init__(self, image_dir='data/resized/resized/', size_limit=16*32):
         import os
@@ -246,6 +291,6 @@ if __name__ == '__main__':
         shuffle=True,
         generator=torch.Generator(device='cuda')
     )
-    train_generative(trainloader)
+    train_generative(trainloader, epochs=1)
 
     

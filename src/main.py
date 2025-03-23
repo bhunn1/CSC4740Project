@@ -68,7 +68,7 @@ if __name__ == '__main__':
         csv.printSchema()
                 
         # Example from images
-        images = read_images(sc, Path('data/images/images/**'))
+        images = read_images(sc, Path('data/resized/resized/**'))
         
         # Turns struct values into columns
         images = images.select('image.*')

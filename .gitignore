@@ -1,5 +1,7 @@
 data/
 .vscode/
+weights/
 
 cache/*
 !cache/.folder
+src/__pycache__g

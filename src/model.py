@@ -56,7 +56,7 @@ class DiffusionSampler:
             
             # Denoising process
             coef1 = 1 / torch.sqrt(1 - beta)
-            coef2 = (beta) / torch.sqrt(1 - alpha)
+            coef2 = beta / torch.sqrt(1 - alpha)
             x_pred = coef1 * (x_t - coef2 * noise_pred)
             
             if t > 0:
@@ -65,7 +65,7 @@ class DiffusionSampler:
                 x_t = x_pred + sigma_t * noise
             else:
                 x_t = x_pred
-                
+            
         return self.denormalize(x_t)
     
     def denormalize(self, x):
@@ -214,6 +214,7 @@ def train_one_epoch(model: nn.Module,
                     dataloader: torch.utils.data.DataLoader):    
     total_loss = 0
     for x in dataloader:
+        x = x.to('cuda', non_blocking=True)
         optim.zero_grad()
         
         x_t, noise, t = diffuser(x)
@@ -284,10 +285,11 @@ def train_generative(dataloader, epochs=100, load_checkpoint=False, save_checkpo
         time_end = time()
         
         print(f"Epoch {epoch_count + epoch + 1}: Loss {epoch_loss}, Epoch Time {round(time_end - epoch_time_start, 2)}, Running Time {round(time_end - time_start, 2)}")
-    
+
+        if save_checkpoint:   
+            save_training_checkpoint(model=model, optim=optim, scheduler=scheduler, epoch=epoch_count + epoch)
     model.save_weights()     
-    if save_checkpoint:   
-        save_training_checkpoint(model=model, optim=optim, scheduler=scheduler, epoch=epoch_count + epochs)
+    
     
 class DummyDataset(torch.utils.data.Dataset):
     def __init__(self, image_dir='data/resized/resized/', size_limit=16*32):
@@ -306,7 +308,7 @@ class DummyDataset(torch.utils.data.Dataset):
         img = img_resized / 255
         img = torchvision.transforms.functional.normalize(img, mean=[.5, .5, .5], std=[.5, .5, .5])
         
-        return img.to('cuda')
+        return img
         
 
 if __name__ == '__main__':
@@ -318,6 +320,6 @@ if __name__ == '__main__':
         shuffle=True,
         generator=torch.Generator(device='cuda')
     )
-    train_generative(trainloader, epochs=5, load_checkpoint=False)
+    train_generative(trainloader, epochs=5, load_checkpoint=True)
 
     

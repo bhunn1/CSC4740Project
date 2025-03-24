@@ -310,6 +310,11 @@ class DummyDataset(torch.utils.data.Dataset):
         
         return img
         
+### One epoch ~ 2800 seconds on my machine
+### Usually 100 epochs is a good model, I've got around 5
+### I'm training this model with the dummy dataset because its faster,
+### we only get performance improvements from spark if we have distributed computing
+### but we still need to implement it and train it for a little bit on spark
 
 if __name__ == '__main__':
     torch.set_default_device('cuda')

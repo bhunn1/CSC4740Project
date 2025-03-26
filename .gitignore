@@ -5,3 +5,4 @@ weights/
 cache/*
 !cache/.folder
 src/__pycache__/
+output/

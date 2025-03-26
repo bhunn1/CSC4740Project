@@ -9,9 +9,9 @@ import torchvision.transforms.functional
 # Noise generator
 class ForwardDiffusion:
     def __init__(self, 
-                 image_size=512, 
-                 timesteps=100,
-                 schedule=(1e-4, 2e-2),
+                 image_size=256, 
+                 timesteps=1000,
+                 schedule=(1e-4, 1e-2),
                  device='cuda'):
         self.device = device
         
@@ -20,7 +20,8 @@ class ForwardDiffusion:
         
         # Noise scheduler parameters
         self.beta = torch.linspace(schedule[0], schedule[1], timesteps).to(self.device)
-        self.alpha = torch.cumprod(1.0 - self.beta, dim=0).to(self.device)
+        self.alpha_hat = torch.cumprod(1.0 - self.beta, dim=0).to(self.device)
+
     
     def diffuse(self, x):
         # Gaussian noise of the same shape as our input
@@ -30,7 +31,7 @@ class ForwardDiffusion:
         # then getting the scheduler values at those timesteps
         batch_size = x.size(0)
         t = torch.randint(0, self.timesteps, (batch_size,)).to(self.device)
-        alpha = self.alpha[t].reshape(batch_size, 1, 1, 1)
+        alpha = self.alpha_hat[t].reshape(batch_size, 1, 1, 1)
         
         # Applying the markov chain (independent) diffusions
         xt = torch.sqrt(alpha) * x + torch.sqrt(1 - alpha) * epsilon
@@ -46,17 +47,17 @@ class DiffusionSampler:
     def __call__(self, model, batches=1):
         # Random noise
         x_t = torch.randn(batches, 3, self.diffusor.size, self.diffusor.size).to('cuda')
-        
+        x_lst = []
         for t in reversed(range(self.diffusor.timesteps)):
             t_tensor = torch.full((batches,), t, dtype=torch.long).to('cuda')
             beta = self.diffusor.beta[t]
-            alpha = self.diffusor.alpha[t]
+            alpha_hat = self.diffusor.alpha_hat[t]
             
             noise_pred = model(x_t, t_tensor)
             
             # Denoising process
             coef1 = 1 / torch.sqrt(1 - beta)
-            coef2 = beta / torch.sqrt(1 - alpha)
+            coef2 = beta / torch.sqrt(1 - alpha_hat)
             x_pred = coef1 * (x_t - coef2 * noise_pred)
             
             if t > 0:
@@ -65,8 +66,10 @@ class DiffusionSampler:
                 x_t = x_pred + sigma_t * noise
             else:
                 x_t = x_pred
-            
-        return self.denormalize(x_t)
+                
+            x_lst.append(x_t)
+        x_lst = torch.stack(x_lst, dim=0)
+        return self.denormalize(x_lst)
     
     def denormalize(self, x):
         mean = torch.tensor([.5, .5, .5], device='cuda').view(1, -1, 1, 1)
@@ -198,7 +201,7 @@ class Denoiser(nn.Module):
         
     def load_weights(self):
         path = str(Path('weights') / Path('unet-weights.pth'))
-        state_dict = torch.load(path, weights_only=True)
+        state_dict = torch.load(path)
             
         self.load_state_dict(state_dict)
 
@@ -267,6 +270,7 @@ def load_training_checkpoint():
 def train_generative(dataloader, epochs=100, load_checkpoint=False, save_checkpoint=True):
     if load_checkpoint:
         model, optim, scheduler, epoch_count = load_training_checkpoint()
+        print(f'Starting from epoch {epoch_count+1}')
     else:
         model = Denoiser()
         optim = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
@@ -288,11 +292,12 @@ def train_generative(dataloader, epochs=100, load_checkpoint=False, save_checkpo
 
         if save_checkpoint:   
             save_training_checkpoint(model=model, optim=optim, scheduler=scheduler, epoch=epoch_count + epoch)
+            model.save_weights()
     model.save_weights()     
     
     
 class DummyDataset(torch.utils.data.Dataset):
-    def __init__(self, image_dir='data/resized/resized/', size_limit=16*32):
+    def __init__(self, image_dir='data/resized/resized/'):
         import os
         
         paths = os.listdir(image_dir)
@@ -304,7 +309,7 @@ class DummyDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         path = self.paths[idx]
         raw_img = torchvision.io.decode_image(path, mode='RGB')
-        img_resized = torchvision.transforms.functional.resize(raw_img, size=(512, 512)).float()
+        img_resized = torchvision.transforms.functional.resize(raw_img, size=(256, 256)).float()
         img = img_resized / 255
         img = torchvision.transforms.functional.normalize(img, mean=[.5, .5, .5], std=[.5, .5, .5])
         
@@ -321,10 +326,10 @@ if __name__ == '__main__':
     data = DummyDataset()
     trainloader = torch.utils.data.DataLoader(
         data,
-        batch_size=32,
+        batch_size=64,
         shuffle=True,
         generator=torch.Generator(device='cuda')
     )
-    train_generative(trainloader, epochs=5, load_checkpoint=True)
+    train_generative(trainloader, epochs=100, load_checkpoint=True)
 
     

@@ -1,16 +1,17 @@
 import numpy as np
-import pyspark
-import pyspark.sql
 from pyspark.sql import SparkSession
 from petastorm.reader import make_batch_reader
+from petastorm.pytorch import DataLoader
 import os
 from pathlib import Path
 import torchvision
 import torch
 from petastorm.etl.dataset_metadata import materialize_dataset
-from petastorm.codecs import ScalarCodec
-from petastorm.unischema import Unischema, UnischemaField
+from petastorm.codecs import NdarrayCodec
+from petastorm.unischema import Unischema, UnischemaField, dict_to_spark_row
 from pyspark.sql.types import FloatType
+from model import train_generative
+
 
 # Opens and manages pyspark context, will run on localhost.
 # Essentially just a wrapper class to run pyspark and do config
@@ -26,6 +27,7 @@ class SparkManager:
             .appName(name)
             .getOrCreate()
         )
+        self.context.sparkContext.addPyFile('./src/model.py')
     
     # These are python dunders that are executed with the with statement
     # It just handles shutting down the context manager and declutters main
@@ -58,8 +60,22 @@ def transform_image(image_bytes, dims, channels):
     img_resized = torchvision.transforms.functional.resize(raw_img, size=(256, 256)).float()
     img = img_resized / 255
     img = img * 2 - 1
+    return img.numpy().astype(np.float32)
+
+def train_partition(_):
+                    
+    file='file:///' + os.getcwd() + '/data/parquet'
+    batch_size=32
+    load_checkpoint=False
+    save_checkpoint=True
+    epochs_per_node=100
     
-    return img.tolist()
+    reader = make_batch_reader(file)
+    loader = DataLoader(reader, batch_size)
+    train_generative(loader, 
+                     epochs=epochs_per_node, 
+                     load_checkpoint=load_checkpoint,
+                     save_checkpoint=save_checkpoint)
 # Data is too large to put on git
 # the archive is unzipped in ./data/
 # link here: https://www.kaggle.com/datasets/ikarus777/best-artworks-of-all-time
@@ -89,21 +105,26 @@ if __name__ == '__main__':
             # Turns struct values into columns
             images = images.select('image.*')
             
-            images = images.rdd.map(
-                lambda x: transform_image(
-                    x['data'], 
-                    dims=(x['width'], x['height']), 
-                    channels=x['nChannels']
-                )
+            schema = Unischema('sparkData', [
+                UnischemaField('images', np.float32, (3, None, None), NdarrayCodec(), False),
+            ])
+            
+            rows_rdd = images.rdd.map(
+                lambda x: dict_to_spark_row(schema, {
+                    'images': transform_image(
+                        x['data'],
+                        dims=(x['width'], x['height']),
+                        channels=x['nChannels']
+                    )})
             )
             
-            df = sc.createDataFrame(images)
-                
-            schema = Unischema('sparkData', [
-                UnischemaField('images', np.float32, (2,), ScalarCodec(FloatType()), False),
-            ])
+            df = sc.createDataFrame(rows_rdd, schema=schema.as_spark_schema())
+            df.printSchema()
+            
             with materialize_dataset(sc, output_url, schema):
                 df.write.mode('overwrite').parquet(output_url)
-        
-        
+
+        workers = int(sc.sparkContext.getConf().get("spark.executor.instances", "1"))
+        processes = sc.sparkContext.parallelize([[] for _ in range(workers)], workers)
+        processes.foreach(train_partition)
         

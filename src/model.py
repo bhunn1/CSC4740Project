@@ -215,7 +215,7 @@ def train_one_epoch(model: nn.Module,
                     dataloader: torch.utils.data.DataLoader):    
     total_loss = 0
     for x in dataloader:
-        x = x.to('cuda', non_blocking=True)
+        x = torch.from_numpy(x['images']).to('cuda', non_blocking=True)
         optim.zero_grad()
         
         x_t, noise, t = diffuser(x)
@@ -274,7 +274,7 @@ def train_generative(dataloader, epochs=100, load_checkpoint=False, save_checkpo
         optim = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, patience=5)
         epoch_count = 0
-    
+        
     diffuser = ForwardDiffusion()
     loss_fn = nn.MSELoss()
     

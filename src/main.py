@@ -1,12 +1,16 @@
+import numpy as np
 import pyspark
 import pyspark.sql
 from pyspark.sql import SparkSession
-import pyspark.ml.torch.distributor as distributer
+from petastorm.reader import make_batch_reader
 import os
 from pathlib import Path
-from petastorm.spark import SparkDatasetConverter, make_spark_converter
 import torchvision
 import torch
+from petastorm.etl.dataset_metadata import materialize_dataset
+from petastorm.codecs import ScalarCodec
+from petastorm.unischema import Unischema, UnischemaField
+from pyspark.sql.types import FloatType
 
 # Opens and manages pyspark context, will run on localhost.
 # Essentially just a wrapper class to run pyspark and do config
@@ -20,7 +24,6 @@ class SparkManager:
         self.context = (SparkSession.builder
             .master(master)
             .appName(name)
-            .config(SparkDatasetConverter.PARENT_CACHE_DIR_URL_CONF, f"file://{cache_dir}")
             .getOrCreate()
         )
     
@@ -46,29 +49,17 @@ def read_images(sc: SparkSession, path: os.PathLike):
     df = sc.read.format("image").load(path)
     return df
     
-def spark_to_dataloader(sc: SparkSession, df: pyspark.sql.DataFrame, 
-                        test_size = .1, train_batches=16, test_batches=16):
-    num_workers = sc.getConf().get("spark.executor.instances")
 
-    train_size = 1 - test_size
-    train, test = df.randomSplit([train_size, test_size])
-    
-    train.repartition(num_workers)
-    test.repartition(num_workers)
-    
-    storm_train, storm_test = make_spark_converter(train), make_spark_converter(test)
-    trainloader = storm_train.make_torch_dataloader(batch_size=train_batches)
-    testloader = storm_test.make_torch_dataloader(batch_size=test_batches)
-    
-    return trainloader, testloader
-
-def transform_image(image_bytes, dims):
-    raw_img = torch.frombuffer(image_bytes, dtype=torch.uint8).reshape((*dims, 3)).permute(2, 0, 1)
+def transform_image(image_bytes, dims, channels):
+    raw_img = torch.frombuffer(image_bytes, dtype=torch.uint8).reshape((*dims, channels)).permute(2, 0, 1)
+    if channels == 1:
+        raw_img = raw_img.repeat(3, 1, 1)
+        
     img_resized = torchvision.transforms.functional.resize(raw_img, size=(256, 256)).float()
     img = img_resized / 255
     img = img * 2 - 1
     
-    return img
+    return img.tolist()
 # Data is too large to put on git
 # the archive is unzipped in ./data/
 # link here: https://www.kaggle.com/datasets/ikarus777/best-artworks-of-all-time
@@ -87,22 +78,32 @@ if __name__ == '__main__':
         csv = read_csv(sc, Path('data/artists.csv'))
         csv.show(10)
         csv.printSchema()
+        
+        output_prepend = 'file:///'
+        output_file = os.getcwd() + '/data/parquet'
+        output_url = output_prepend + output_file
+        
+        if not os.path.exists(output_file):
+            images = read_images(sc, Path('data/resized/resized/*'))
+            
+            # Turns struct values into columns
+            images = images.select('image.*')
+            
+            images = images.rdd.map(
+                lambda x: transform_image(
+                    x['data'], 
+                    dims=(x['width'], x['height']), 
+                    channels=x['nChannels']
+                )
+            )
+            
+            df = sc.createDataFrame(images)
                 
-        # Example from images
-        images = read_images(sc, Path('data/resized/resized/*'))
+            schema = Unischema('sparkData', [
+                UnischemaField('images', np.float32, (2,), ScalarCodec(FloatType()), False),
+            ])
+            with materialize_dataset(sc, output_url, schema):
+                df.write.mode('overwrite').parquet(output_url)
         
-        # Turns struct values into columns
-        images = images.select('image.*')
-        
-        # Turn raw bytes into image tensors
-        
-        images = images.rdd.map(lambda x: transform_image(x['data'], dims=(x['width'], x['height']))).take(10)
-        for img in images:
-            print(img)
-        #images.show(10)        
-        #images.printSchema()
-        
-        # Train/test split for images
-        #trainloader, valloader = spark_to_dataloader(sc, images)
         
         

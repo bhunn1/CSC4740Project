@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from petastorm.spark import SparkDatasetConverter, make_spark_converter
 import torchvision
+import torch
 
 # Opens and manages pyspark context, will run on localhost.
 # Essentially just a wrapper class to run pyspark and do config
@@ -61,8 +62,8 @@ def spark_to_dataloader(sc: SparkSession, df: pyspark.sql.DataFrame,
     
     return trainloader, testloader
 
-def transform_images(image_bytes):
-    raw_img = torchvision.io.decode_image(image_bytes, mode='RGB')
+def transform_image(image_bytes, dims):
+    raw_img = torch.frombuffer(image_bytes, dtype=torch.uint8).reshape((*dims, 3)).permute(2, 0, 1)
     img_resized = torchvision.transforms.functional.resize(raw_img, size=(256, 256)).float()
     img = img_resized / 255
     img = img * 2 - 1
@@ -92,9 +93,14 @@ if __name__ == '__main__':
         
         # Turns struct values into columns
         images = images.select('image.*')
-        images = images['data'].map(lambda x: Image.open)
-        images.show(10)        
-        images.printSchema()
+        
+        # Turn raw bytes into image tensors
+        
+        images = images.rdd.map(lambda x: transform_image(x['data'], dims=(x['width'], x['height']))).take(10)
+        for img in images:
+            print(img)
+        #images.show(10)        
+        #images.printSchema()
         
         # Train/test split for images
         #trainloader, valloader = spark_to_dataloader(sc, images)

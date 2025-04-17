@@ -1,14 +1,11 @@
 import pyspark
-import pyspark.conf
 import pyspark.sql
 from pyspark.sql import SparkSession
 import pyspark.ml.torch.distributor as distributer
-import pandas as pd
 import os
 from pathlib import Path
-from torch.utils.data import Dataset, DataLoader
-import glob
 from petastorm.spark import SparkDatasetConverter, make_spark_converter
+import torchvision
 
 # Opens and manages pyspark context, will run on localhost.
 # Essentially just a wrapper class to run pyspark and do config
@@ -48,6 +45,29 @@ def read_images(sc: SparkSession, path: os.PathLike):
     df = sc.read.format("image").load(path)
     return df
     
+def spark_to_dataloader(sc: SparkSession, df: pyspark.sql.DataFrame, 
+                        test_size = .1, train_batches=16, test_batches=16):
+    num_workers = sc.getConf().get("spark.executor.instances")
+
+    train_size = 1 - test_size
+    train, test = df.randomSplit([train_size, test_size])
+    
+    train.repartition(num_workers)
+    test.repartition(num_workers)
+    
+    storm_train, storm_test = make_spark_converter(train), make_spark_converter(test)
+    trainloader = storm_train.make_torch_dataloader(batch_size=train_batches)
+    testloader = storm_test.make_torch_dataloader(batch_size=test_batches)
+    
+    return trainloader, testloader
+
+def transform_images(image_bytes):
+    raw_img = torchvision.io.decode_image(image_bytes, mode='RGB')
+    img_resized = torchvision.transforms.functional.resize(raw_img, size=(256, 256)).float()
+    img = img_resized / 255
+    img = img * 2 - 1
+    
+    return img
 # Data is too large to put on git
 # the archive is unzipped in ./data/
 # link here: https://www.kaggle.com/datasets/ikarus777/best-artworks-of-all-time
@@ -68,18 +88,15 @@ if __name__ == '__main__':
         csv.printSchema()
                 
         # Example from images
-        images = read_images(sc, Path('data/resized/resized/**'))
+        images = read_images(sc, Path('data/resized/resized/*'))
         
         # Turns struct values into columns
         images = images.select('image.*')
+        images = images['data'].map(lambda x: Image.open)
         images.show(10)        
         images.printSchema()
         
         # Train/test split for images
-        images_train, images_val = images.randomSplit([.9, .1])
-        convert_train, convert_val = make_spark_converter(images_train), make_spark_converter(images_val)
+        #trainloader, valloader = spark_to_dataloader(sc, images)
         
-        # Petastorm dataloaders for distributed processing
-        trainloader = convert_train.make_torch_dataloader(batch_size=16)
-        valloader = convert_val.make_torch_dataloader(batch_size=16)
         

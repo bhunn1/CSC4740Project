@@ -72,9 +72,7 @@ class DiffusionSampler:
         return self.denormalize(x_lst)
     
     def denormalize(self, x):
-        mean = torch.tensor([.5, .5, .5], device='cuda').view(1, -1, 1, 1)
-        std = torch.tensor([.5, .5, .5], device='cuda').view(1, -1, 1, 1)
-        x_hat = torch.clamp(x * std + mean, 0, 1)
+        x_hat = torch.clamp((x + 1) / 2, 0, 1)
         return x_hat
 
 # Encodes sequence data into a vector
@@ -311,7 +309,7 @@ class DummyDataset(torch.utils.data.Dataset):
         raw_img = torchvision.io.decode_image(path, mode='RGB')
         img_resized = torchvision.transforms.functional.resize(raw_img, size=(256, 256)).float()
         img = img_resized / 255
-        img = torchvision.transforms.functional.normalize(img, mean=[.5, .5, .5], std=[.5, .5, .5])
+        img = img * 2 - 1
         
         return img
         

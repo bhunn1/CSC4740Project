@@ -17,7 +17,7 @@ def generate_image(name):
     diffusor = ForwardDiffusion()
     model = Denoiser()
     
-    model.load_weights()
+    #model.load_weights()
     model.eval()
     
     images = 1    
@@ -45,5 +45,5 @@ def generate_image(name):
 
 
 if __name__ == '__main__':
-    for i in range(10):
-        generate_image(f'progress{i}')
+    for i in range(1):
+        generate_image(f'noise{i}')

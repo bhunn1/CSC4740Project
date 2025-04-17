@@ -10,8 +10,8 @@ import torchvision.transforms.functional
 class ForwardDiffusion:
     def __init__(self, 
                  image_size=256, 
-                 timesteps=1000,
-                 schedule=(1e-4, 1e-2),
+                 timesteps=2000,
+                 schedule=(1e-4, 2e-2),
                  device='cuda'):
         self.device = device
         
@@ -313,8 +313,8 @@ class DummyDataset(torch.utils.data.Dataset):
         
         return img
         
-### One epoch ~ 2800 seconds on my machine
-### Usually 100 epochs is a good model, I've got around 5
+### One epoch ~ 80 seconds on my machine
+### Haven't tested CPU - might be faster on smaller batches but I don't know if you can run 64 threads on CPU and matmult will be worse
 ### I'm training this model with the dummy dataset because its faster,
 ### we only get performance improvements from spark if we have distributed computing
 ### but we still need to implement it and train it for a little bit on spark

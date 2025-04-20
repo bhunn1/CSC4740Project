@@ -5,13 +5,23 @@ from time import time
 import math
 import torchvision.io
 import torchvision.transforms.functional
+from sklearn.decomposition import PCA
+
+TIMESTEPS = 500
+UNET_CHANNEL_SCALE = 64
+UNET_BASE_DEPTH = 5
+BETA_SCHEDULE = (1e-4, 5e-3)
+LR = 1e-4
+BATCH_SIZE = 32
+LR_PATIENCE=5
+EPOCHS = 100
 
 # Noise generator
 class ForwardDiffusion:
     def __init__(self, 
                  image_size=256, 
-                 timesteps=2000,
-                 schedule=(1e-4, 2e-2),
+                 timesteps=TIMESTEPS,
+                 schedule=BETA_SCHEDULE,
                  device='cuda'):
         self.device = device
         
@@ -43,12 +53,28 @@ class ForwardDiffusion:
 class DiffusionSampler:
     def __init__(self, diffusor: ForwardDiffusion):
         self.diffusor = diffusor
+        self.hook_lst = []
     
-    def __call__(self, model, batches=1):
+    def save_hook(self):
+        def hook(module, input, output):
+            vec = output.detach().cpu().flatten(start_dim=1)
+            self.hook_lst.append(vec)
+        return hook
+    
+    def __call__(self, model, batches=1, hook_timestep=None):
         # Random noise
+        self.hook_lst = []
+        handle = None
         x_t = torch.randn(batches, 3, self.diffusor.size, self.diffusor.size).to('cuda')
         x_lst = []
         for t in reversed(range(self.diffusor.timesteps)):
+            if hook_timestep is not None:
+                if t == hook_timestep:
+                    handle = model.bottleneck.register_forward_hook(self.save_hook())
+                elif handle is not None:
+                    handle.remove()
+                    handle = None
+            
             t_tensor = torch.full((batches,), t, dtype=torch.long).to('cuda')
             beta = self.diffusor.beta[t]
             alpha_hat = self.diffusor.alpha_hat[t]
@@ -68,8 +94,12 @@ class DiffusionSampler:
                 x_t = x_pred
                 
             x_lst.append(x_t)
-        x_lst = torch.stack(x_lst, dim=0)
-        return self.denormalize(x_lst)
+        x_lst = torch.stack(x_lst, dim=1)
+        
+        if hook_timestep is not None:
+            return self.denormalize(x_lst), self.hook_lst
+        else:
+            return self.denormalize(x_lst)
     
     def denormalize(self, x):
         x_hat = torch.clamp((x + 1) / 2, 0, 1)
@@ -77,7 +107,7 @@ class DiffusionSampler:
 
 # Encodes sequence data into a vector
 class SinEncoder(nn.Module):
-    def __init__(self, dim, timesteps=1000, device='cuda'):
+    def __init__(self, dim, timesteps=TIMESTEPS, device='cuda'):
         super().__init__()
         self.dim = dim
         self.device = device
@@ -99,9 +129,9 @@ class SinEncoder(nn.Module):
 
 # Encodes time data into a vector
 class TimeEmbedder(nn.Module):
-    def __init__(self, embedding_dim=256):
+    def __init__(self, embedding_dim=256, timesteps=TIMESTEPS):
         super().__init__()
-        self.encoder = SinEncoder(embedding_dim)
+        self.encoder = SinEncoder(embedding_dim, timesteps=timesteps)
         
         self.mlp = nn.Sequential(
             nn.Linear(embedding_dim, embedding_dim),
@@ -147,8 +177,9 @@ class UpConvBlock(nn.Module):
 class Denoiser(nn.Module):
     def __init__(self, 
                  channels=3, 
-                 depth=4,
-                 channel_depth_base=64):
+                 depth=UNET_BASE_DEPTH,
+                 channel_depth_base=UNET_CHANNEL_SCALE,
+                 timesteps=TIMESTEPS):
 
         super().__init__()
         
@@ -157,7 +188,7 @@ class Denoiser(nn.Module):
         in_out_pairs = list(zip(channel_depth[:-1], channel_depth[1:]))
         
         # Gives model intuition on how noisy the input is
-        self.time_embed = TimeEmbedder(embedding_dim=channel_depth[-1])
+        self.time_embed = TimeEmbedder(embedding_dim=channel_depth[-1], timesteps=timesteps)
         
         # UNet architecture
         # encoders downsample data and increase filter count
@@ -212,10 +243,16 @@ def train_one_epoch(model: nn.Module,
                     loss_fn,
                     scheduler: torch.optim.lr_scheduler.LinearLR,
                     diffuser: ForwardDiffusion, 
-                    dataloader: torch.utils.data.DataLoader):    
+                    dataloader: torch.utils.data.DataLoader,
+                    cluster: bool):    
     total_loss = 0
+    total_count = 0
     for x in dataloader:
-        x = torch.from_numpy(x['images']).to('cuda', non_blocking=True)
+        if cluster:
+            x = x['images'].to('cuda', non_blocking=True)
+        else:
+            x = x.to('cuda')
+            
         optim.zero_grad()
         
         x_t, noise, t = diffuser(x)
@@ -225,8 +262,9 @@ def train_one_epoch(model: nn.Module,
         loss.backward()
         optim.step()
         total_loss += loss.item()
-        
-    total_loss /= len(dataloader)
+        total_count += 1
+    
+    total_loss /= total_count
     scheduler.step(total_loss)
     return total_loss
     
@@ -253,19 +291,21 @@ def load_training_checkpoint():
     model.load_state_dict(
         state['model_state_dict']
     )
-    optim = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
+    optim = torch.optim.Adam(model.parameters(), lr=LR)
     optim.load_state_dict(
         state['optim_state_dict']
     )
 
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, patience=5)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, patience=LR_PATIENCE)
     scheduler.load_state_dict(
         state['scheduler_state_dict']
     )
     return model, optim, scheduler, state['epoch']
     
     
-def train_generative(dataloader, epochs=100, load_checkpoint=False, save_checkpoint=True):
+def train_generative(dataloader, epochs=EPOCHS, load_checkpoint=False, save_checkpoint=True, cluster=True):
+    torch.set_default_device('cuda')
+    
     if load_checkpoint:
         model, optim, scheduler, epoch_count = load_training_checkpoint()
         print(f'Starting from epoch {epoch_count+1}')
@@ -283,7 +323,7 @@ def train_generative(dataloader, epochs=100, load_checkpoint=False, save_checkpo
     print("Starting training")
     for epoch in range(epochs):
         epoch_time_start = time()
-        epoch_loss = train_one_epoch(model, optim, loss_fn, scheduler, diffuser, dataloader)
+        epoch_loss = train_one_epoch(model, optim, loss_fn, scheduler, diffuser, dataloader, cluster=cluster)
         time_end = time()
         
         print(f"Epoch {epoch_count + epoch + 1}: Loss {epoch_loss}, Epoch Time {round(time_end - epoch_time_start, 2)}, Running Time {round(time_end - time_start, 2)}")
@@ -324,10 +364,10 @@ if __name__ == '__main__':
     data = DummyDataset()
     trainloader = torch.utils.data.DataLoader(
         data,
-        batch_size=64,
+        batch_size=BATCH_SIZE,
         shuffle=True,
         generator=torch.Generator(device='cuda')
     )
-    train_generative(trainloader, epochs=100, load_checkpoint=True)
+    train_generative(trainloader, epochs=EPOCHS, load_checkpoint=False, cluster=False)
 
     

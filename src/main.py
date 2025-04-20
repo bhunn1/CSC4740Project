@@ -1,6 +1,6 @@
 import numpy as np
 from pyspark.sql import SparkSession
-from petastorm.reader import make_batch_reader
+from petastorm.reader import make_reader
 from petastorm.pytorch import DataLoader
 import os
 from pathlib import Path
@@ -64,13 +64,13 @@ def transform_image(image_bytes, dims, channels):
 
 def train_partition(_):
                     
-    file='file:///' + os.getcwd() + '/data/parquet'
-    batch_size=32
-    load_checkpoint=False
-    save_checkpoint=True
-    epochs_per_node=100
-    
-    reader = make_batch_reader(file)
+    file = 'file:///' + os.getcwd() + '/data/parquet'
+    batch_size = 32
+    load_checkpoint = False
+    save_checkpoint = True
+    epochs_per_node = 100
+        
+    reader = make_reader(file)
     loader = DataLoader(reader, batch_size)
     train_generative(loader, 
                      epochs=epochs_per_node, 
@@ -98,7 +98,7 @@ if __name__ == '__main__':
         output_prepend = 'file:///'
         output_file = os.getcwd() + '/data/parquet'
         output_url = output_prepend + output_file
-        
+                
         if not os.path.exists(output_file):
             images = read_images(sc, Path('data/resized/resized/*'))
             
@@ -112,14 +112,13 @@ if __name__ == '__main__':
             rows_rdd = images.rdd.map(
                 lambda x: dict_to_spark_row(schema, {
                     'images': transform_image(
-                        x['data'],
+                        x['data'],  
                         dims=(x['width'], x['height']),
                         channels=x['nChannels']
                     )})
             )
             
             df = sc.createDataFrame(rows_rdd, schema=schema.as_spark_schema())
-            df.printSchema()
             
             with materialize_dataset(sc, output_url, schema):
                 df.write.mode('overwrite').parquet(output_url)
@@ -127,4 +126,6 @@ if __name__ == '__main__':
         workers = int(sc.sparkContext.getConf().get("spark.executor.instances", "1"))
         processes = sc.sparkContext.parallelize([[] for _ in range(workers)], workers)
         processes.foreach(train_partition)
+        
+        
         

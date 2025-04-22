@@ -7,44 +7,53 @@ import torchvision.io
 import torchvision.transforms.functional
 from sklearn.decomposition import PCA
 
-TIMESTEPS = 250
-UNET_CHANNEL_SCALE = 64
-UNET_BASE_DEPTH = 5
-#BETA_SCHEDULE = (1e-4, 2e-3)
-LR = 1e-3
-BATCH_SIZE = 32
-LR_PATIENCE=5
-EPOCHS = 100
-DECAY = 1e-4
-TIME_SCALE = 4
+TIMESTEPS = 100 # Number of denoising timesteps the model samples from
+UNET_CHANNEL_SCALE = 64 # Every layer in the UNet will have Channel_Scale * layer_number channels
+UNET_BASE_DEPTH = 5 # Number of UNet down/up blocks (including bottleneck layer)
+BETA_SCHEDULE = (1e-4, 2e-3)
+LR = 1e-4 # Initial learning rate
+BATCH_SIZE = 16
+LR_PATIENCE=3 # Epoch patience of the learning rate scheduler, decreases lr after n epochs
+EPOCHS = 100 
+DECAY = 1e-4 # Weight decay for the optimizer
+TIME_SCALE = 4 # Scale of time embedding dimensions, number of dims is time_scale * channel_scale
+IMAGE_SIZE=256 # Side length for one dimension of the image
 
 # Noise generator
 class ForwardDiffusion:
     def __init__(self, 
-                 image_size=256, 
-                 timesteps=TIMESTEPS,
-                 #schedule=BETA_SCHEDULE,
-                 device='cuda'):
+                image_size=IMAGE_SIZE, 
+                timesteps=TIMESTEPS,
+                device='cuda',
+                schedule_type='cosine'):
         self.device = device
         
         self.size = image_size
         self.timesteps = timesteps
         
         # Noise scheduler parameters
-        self.cosine_beta_schedule()
-        # self.beta = torch.linspace(schedule[0], schedule[1], timesteps).to(self.device)
-        # self.alpha_hat = torch.cumprod(1.0 - self.beta, dim=0).to(self.device)
+        if schedule_type == 'cosine':
+            self.cosine_beta_schedule()
+        elif schedule_type == 'linear':
+            self.linear_beta_schedule()
+        else:
+            raise ValueError('Invalid schedule type argument, should be "cosine" or "linear"!')
+        
 
+    def linear_beta_schedule(self, schedule=BETA_SCHEDULE):
+        self.beta = torch.linspace(schedule[0], schedule[1], self.timesteps).to(self.device)
+        self.alpha_hat = torch.cumprod(1.0 - self.beta, dim=0).to(self.device)
+    
     def cosine_beta_schedule(self, s=0.008):
         steps = self.timesteps + 1
-        x = torch.linspace(0, self.timesteps, steps)
-        alphas_cumprod = torch.cos(((x / self.timesteps) + s) / (1 + s) * math.pi * 0.5) ** 2
-        alphas_cumprod = alphas_cumprod / alphas_cumprod[0]  # Normalize to start at 1
+        x = torch.linspace(0, self.timesteps, steps, dtype=torch.float32)
+        alphas_cumprod = torch.cos(((x / self.timesteps) + s) / (1 + s) * torch.pi * 0.5) ** 2
         betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
         
+        alphas_cumprod = alphas_cumprod[:-1] / alphas_cumprod[0]
         
-        self.alpha_hat = alphas_cumprod[:-1].to(self.device)  # These are your cumulative alphas (α̅_t)
-        self.beta = torch.clip(betas, 1e-8, 0.999).to(self.device)
+        self.alpha_hat = alphas_cumprod.to(self.device)
+        self.beta = torch.clip(betas, 0, 0.9999).to(self.device)
         
     
     def diffuse(self, x):
@@ -55,69 +64,14 @@ class ForwardDiffusion:
         # then getting the scheduler values at those timesteps
         batch_size = x.size(0)
         t = torch.randint(0, self.timesteps, (batch_size,)).to(self.device)
-        alpha = self.alpha_hat[t].reshape(batch_size, 1, 1, 1)
+        alpha_hat = self.alpha_hat[t].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
         
         # Applying the markov chain (independent) diffusions
-        xt = torch.sqrt(alpha) * x + torch.sqrt(1 - alpha) * epsilon
+        xt = torch.sqrt(alpha_hat) * x + torch.sqrt(1 - alpha_hat) * epsilon
         return xt, epsilon, t
     
     def __call__(self, x):
         return self.diffuse(x)
-
-class DiffusionSampler:
-    def __init__(self, diffusor: ForwardDiffusion):
-        self.diffusor = diffusor
-        self.hook_lst = []
-    
-    def save_hook(self):
-        def hook(module, input, output):
-            vec = output.detach().cpu().flatten(start_dim=1)
-            self.hook_lst.append(vec)
-        return hook
-    
-    def __call__(self, model, batches=1, hook_timestep=None):
-        # Random noise
-        self.hook_lst = []
-        handle = None
-        x_t = torch.randn(batches, 3, self.diffusor.size, self.diffusor.size).to('cuda')
-        x_lst = []
-        for t in reversed(range(self.diffusor.timesteps)):
-            if hook_timestep is not None:
-                if t == hook_timestep:
-                    handle = model.bottleneck.register_forward_hook(self.save_hook())
-                elif handle is not None:
-                    handle.remove()
-                    handle = None
-            
-            t_tensor = torch.full((batches,), t, dtype=torch.long).to('cuda')
-            beta = self.diffusor.beta[t]
-            alpha_hat = self.diffusor.alpha_hat[t]
-            
-            noise_pred = model(x_t, t_tensor)
-            
-            # Denoising process
-            coef1 = 1 / torch.sqrt(1 - beta)
-            coef2 = beta / torch.sqrt(1 - alpha_hat)
-            x_pred = coef1 * (x_t - coef2 * noise_pred)
-            
-            if t > 0:
-                noise = torch.randn_like(x_t).to('cuda')
-                sigma_t = torch.sqrt(beta)
-                x_t = x_pred + sigma_t * noise
-            else:
-                x_t = x_pred
-                
-            x_lst.append(x_t)
-        x_lst = torch.stack(x_lst, dim=1)
-        
-        if hook_timestep is not None:
-            return self.denormalize(x_lst), self.hook_lst
-        else:
-            return self.denormalize(x_lst)
-    
-    def denormalize(self, x):
-        x_hat = torch.clamp((x + 1) / 2, 0, 1)
-        return x_hat
 
 # Encodes sequence data into a vector
 class SinEncoder(nn.Module):
@@ -143,7 +97,7 @@ class SinEncoder(nn.Module):
 
 # Encodes time data into a vector
 class TimeEmbedder(nn.Module):
-    def __init__(self, embedding_dim=256, timesteps=TIMESTEPS):
+    def __init__(self, embedding_dim=TIME_SCALE*UNET_CHANNEL_SCALE, timesteps=TIMESTEPS):
         super().__init__()
         self.encoder = SinEncoder(embedding_dim, timesteps=timesteps)
         
@@ -270,14 +224,69 @@ class Denoiser(nn.Module):
             
         self.load_state_dict(state_dict)
 
+class DiffusionSampler:
+    def __init__(self, diffusor: ForwardDiffusion):
+        self.diffusor = diffusor
+        self.hook_lst = []
+    
+    def save_hook(self):
+        def hook(module, input, output):
+            vec = output.detach().cpu().flatten(start_dim=1)
+            self.hook_lst.append(vec)
+        return hook
+    
+    def __call__(self, model: Denoiser, batches=1, hook_timestep=None):
+        # Random noise
+        self.hook_lst = []
+        handle = None
+        x_t = torch.randn(batches, 3, self.diffusor.size, self.diffusor.size).to('cuda')
+        x_lst = []
+        for t in reversed(range(self.diffusor.timesteps)):
+            if hook_timestep is not None:
+                if t == hook_timestep:
+                    handle = model.bottleneck.register_forward_hook(self.save_hook())
+                elif handle is not None:
+                    handle.remove()
+                    handle = None
+            
+            t_tensor = torch.full((batches,), t, dtype=torch.long).to('cuda')
+            beta = self.diffusor.beta[t].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            alpha = 1 - beta
+            alpha_hat = self.diffusor.alpha_hat[t].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            
+            noise_pred = model(x_t, t_tensor)
+            
+            # Denoising process
+            coef1 = 1 / torch.sqrt(alpha)
+            coef2 = beta / torch.sqrt(1 - alpha_hat)
+            x_pred = coef1 * (x_t - coef2 * noise_pred)
+            
+            if t > 0:
+                noise = torch.randn_like(x_t).to('cuda')
+                sigma_t = torch.sqrt(beta)
+                x_t = x_pred + sigma_t * noise
+            else:
+                x_t = x_pred
+                
+            x_lst.append(x_t)
+        x_lst = torch.stack(x_lst, dim=1)
+        
+        if hook_timestep is not None:
+            return self.denormalize(x_lst), self.hook_lst
+        else:
+            return self.denormalize(x_lst)
+    
+    def denormalize(self, x):
+        x_hat = torch.clamp((x + 1) / 2, 0, 1)
+        return x_hat
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 def train_one_epoch(model: nn.Module, 
                     optim: torch.optim.Optimizer, 
-                    loss_fn,
-                    scheduler: torch.optim.lr_scheduler.LinearLR,
+                    loss_fn: torch.nn.MSELoss,
+                    scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau,
                     diffuser: ForwardDiffusion, 
                     dataloader: torch.utils.data.DataLoader,
                     cluster: bool):    
@@ -319,7 +328,7 @@ def save_training_checkpoint(model, optim, scheduler, epoch):
     path =str(Path('weights') / Path('unet-training-checkpoint.pth'))
     torch.save(state, path)
     
-def load_training_checkpoint():
+def load_training_checkpoint(load_lr=False):
     path = str(Path('weights') / Path('unet-training-checkpoint.pth'))
     state = torch.load(f=path)
     
@@ -327,11 +336,16 @@ def load_training_checkpoint():
     model.load_state_dict(
         state['model_state_dict']
     )
+
     optim = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=DECAY)
     optim.load_state_dict(
         state['optim_state_dict']
     )
 
+    if not load_lr:
+        for group in optim.param_groups:
+            group['lr'] = LR
+        
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, patience=LR_PATIENCE)
     scheduler.load_state_dict(
         state['scheduler_state_dict']
@@ -362,7 +376,12 @@ def train_generative(dataloader, epochs=EPOCHS, load_checkpoint=False, save_chec
         epoch_loss = train_one_epoch(model, optim, loss_fn, scheduler, diffuser, dataloader, cluster=cluster)
         time_end = time()
         
-        print(f"Epoch {epoch_count + epoch + 1}: Loss {epoch_loss}, Epoch Time {round(time_end - epoch_time_start, 2)}, Running Time {round(time_end - time_start, 2)}")
+        current_lr = scheduler.get_last_lr()[0]
+        print(f"""Epoch {epoch_count + epoch + 1}:
+              Loss {round(epoch_loss, 4)},
+              Epoch Time {round(time_end - epoch_time_start, 2)},
+              Running Time {round(time_end - time_start, 2)},
+              Current LR {format(current_lr, '.2e')}""")
 
         if save_checkpoint:   
             save_training_checkpoint(model=model, optim=optim, scheduler=scheduler, epoch=epoch_count + epoch)
@@ -383,7 +402,7 @@ class DummyDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         path = self.paths[idx]
         raw_img = torchvision.io.decode_image(path, mode='RGB')
-        img_resized = torchvision.transforms.functional.resize(raw_img, size=(256, 256)).float()
+        img_resized = torchvision.transforms.functional.resize(raw_img, size=(IMAGE_SIZE, IMAGE_SIZE)).float()
         img = img_resized / 255
         img = img * 2 - 1
         
@@ -404,6 +423,6 @@ if __name__ == '__main__':
         shuffle=True,
         generator=torch.Generator(device='cuda')
     )
-    train_generative(trainloader, epochs=EPOCHS, load_checkpoint=False, cluster=False)
+    train_generative(trainloader, epochs=EPOCHS, load_checkpoint=True, cluster=False)
 
     

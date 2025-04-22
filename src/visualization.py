@@ -24,7 +24,7 @@ def process_hooks(arr: torch.Tensor):
 def tensor_to_image(x):
     return to_pil_image(x.squeeze().permute(1, 2, 0).cpu().numpy(), mode='RGB')
 
-def generate_image(name):
+def generate_atlas(name):
     torch.set_default_device('cuda')
     
     diffusor = ForwardDiffusion()
@@ -67,4 +67,4 @@ def generate_image(name):
         
 
 if __name__ == '__main__':
-    generate_image(f'noise')
+    generate_atlas(f'noise')

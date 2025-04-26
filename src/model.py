@@ -39,13 +39,16 @@ class ForwardDiffusion:
         else:
             raise ValueError('Invalid schedule type argument, should be "cosine" or "linear"!')
         
+        # Precalcuating commonly used coefficients
         self.sqrt_alpha_bar = self.alpha_hat.sqrt().view(-1, 1, 1, 1)
         self.sqrt_one_minus_alpha_bar = (1 - self.alpha_hat).sqrt().view(-1, 1, 1, 1)
-        
+    
+    # Creates noise linearly from schedule[0] to schedule[1]
     def linear_beta_schedule(self, schedule=BETA_SCHEDULE):
         self.beta = torch.linspace(schedule[0], schedule[1], self.timesteps).to(self.device)
         self.alpha_hat = torch.cumprod(1.0 - self.beta, dim=0).to(self.device)
     
+    # Creates noise in a sinusoidal pattern to help adjust model to noise at each step
     def cosine_beta_schedule(self, s=0.008):
         steps = self.timesteps + 1
         x = torch.linspace(0, self.timesteps, steps, dtype=torch.float32)
@@ -212,6 +215,7 @@ class DiffusionSampler:
         self.diffusor = diffusor
         self.hook_lst = []
     
+    # Saves a vector to plot output in an activation atlas
     def save_hook(self):
         def hook(module, input, output):
             vec = output.detach().cpu().flatten(start_dim=1)
@@ -259,6 +263,7 @@ class DiffusionSampler:
         else:
             return self.denormalize(x_lst)
     
+    # Turns a [-1, 1] image into a [0, 1] image for plotting
     def denormalize(self, x):
         x_hat = torch.clamp((x + 1) / 2, 0, 1)
         return x_hat
@@ -266,6 +271,7 @@ class DiffusionSampler:
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+# Standard training loop
 def train_one_epoch(model: nn.Module, 
                     optim: torch.optim.Optimizer, 
                     loss_fn: torch.nn.MSELoss,
@@ -331,7 +337,7 @@ def load_training_checkpoint(load_lr=True):
     )
     return model, optim, scheduler, state['epoch']
     
-    
+# Dummy trainer for one device training, not used for cluster computing
 def train_generative(dataloader, epochs=EPOCHS, load_checkpoint=False, save_checkpoint=True):
     torch.set_default_device('cuda')
     
@@ -367,7 +373,7 @@ def train_generative(dataloader, epochs=EPOCHS, load_checkpoint=False, save_chec
             model.save_weights()
     model.save_weights()     
     
-    
+# Dataset loader for one device, used for testing not used for cluster computing
 class DummyDataset(torch.utils.data.Dataset):
     def __init__(self, image_dir='data/resized/resized/'):
         import os
@@ -386,7 +392,7 @@ class DummyDataset(torch.utils.data.Dataset):
         img = img * 2 - 1
         return img
         
-### One epoch ~ 80 seconds on my machine
+### One epoch ~ 150 seconds on my machine
 ### Haven't tested CPU - might be faster on smaller batches but I don't know if you can run 64 threads on CPU and matmult will be worse
 ### I'm training this model with the dummy dataset because its faster,
 ### we only get performance improvements from spark if we have distributed computing

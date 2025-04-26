@@ -14,16 +14,16 @@ import torchvision
 ### n dimensional space, then use PCA to plot all those images on the same plane
 
 
-
-
+# Convert an activation hook into a 2D vector based on a manifold approximation
 def process_hooks(arr: torch.Tensor):
     umap_arr = UMAP(n_neighbors=15, min_dist=0.1).fit_transform(arr)
     return umap_arr
         
-
 def tensor_to_image(x):
     return x.squeeze().permute(1, 2, 0).cpu()
 
+# Attempts to generate an activation atlas using the UMAP method, can be memory hungry
+# in its current form
 def generate_atlas(name):
     torch.set_default_device('cuda')
     
@@ -63,7 +63,8 @@ def generate_atlas(name):
         
         plt.imshow(image)
         plt.savefig(f'output/{name}.png')
-        
+    
+# Generates one image and shows the image at different noise levels
 def generate_image(name="image"):
     torch.set_default_device('cuda')
     
@@ -85,7 +86,7 @@ def generate_image(name="image"):
         plt.imshow(img)
         plt.savefig(f'output/{name}.png')
         
-        
+# Tests the forward noising process on one sample image
 def generate_tests(*args, **kwargs):
     torch.set_default_device('cuda')
     

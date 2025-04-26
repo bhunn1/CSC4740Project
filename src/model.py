@@ -49,6 +49,7 @@ class ForwardDiffusion:
         self.alpha_hat = torch.cumprod(1.0 - self.beta, dim=0).to(self.device)
     
     # Creates noise in a sinusoidal pattern to help adjust model to noise at each step
+    # This implementation is directly from the original paper
     def cosine_beta_schedule(self, s=0.008):
         steps = self.timesteps + 1
         x = torch.linspace(0, self.timesteps, steps, dtype=torch.float32)
@@ -226,7 +227,9 @@ class DiffusionSampler:
         # Random noise
         self.hook_lst = []
         handle = None
+       
         x_t = torch.randn(batches, 3, self.diffusor.size, self.diffusor.size).to('cuda')
+        
         x_lst = []
         for t in reversed(range(self.diffusor.timesteps)):
             if hook_timestep is not None:

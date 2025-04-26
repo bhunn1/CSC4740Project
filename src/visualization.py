@@ -35,7 +35,7 @@ def generate_atlas(name):
     model.load_weights()
     model.eval()
     
-    batch = 3    
+    batch = 5
     
     x = []
     hooks = []
@@ -65,7 +65,7 @@ def generate_atlas(name):
         plt.savefig(f'output/{name}.png')
     
 # Generates one image and shows the image at different noise levels
-def generate_image(name="image"):
+def generate_image():
     torch.set_default_device('cuda')
     
     diffusor = ForwardDiffusion()
@@ -76,15 +76,11 @@ def generate_image(name="image"):
     model.eval()     
     with torch.no_grad():
         sampler = DiffusionSampler(diffusor=diffusor)
-        x_lst = reversed(sampler(model, 1))
-        print(x_lst.size())
-        for t in range(0, diffusor.timesteps, diffusor.timesteps // 10):
-            img = tensor_to_image(x_lst[0, t, ...])
-            plt.imshow(img)
-            plt.show()
-        img = tensor_to_image(x_lst[0, -1, ...])
-        plt.imshow(img)
-        plt.savefig(f'output/{name}.png')
+        x_lst = sampler(model, batches=1)
+      
+        img = to_pil_image(x_lst[0, -2, ...])
+        return img
+        
         
 # Tests the forward noising process on one sample image
 def generate_tests(*args, **kwargs):
@@ -113,4 +109,6 @@ def generate_tests(*args, **kwargs):
         plt.show()
         
 if __name__ == '__main__':
-    generate_image(f'test')
+    
+    for i in range(10):
+        generate_image().save(f'output/progress{i}.png')

@@ -7,7 +7,7 @@ from umap import UMAP
 from PIL import Image
 import numpy as np
 from torchvision.transforms.functional import to_pil_image
-
+import torchvision
 ### File for making visualizations for the final presentation
 ### If we want to make an activation atlas, we'll have to create a feature vector
 ### from the bottleneck layer of the UNet, and use that to place the images in 
@@ -22,7 +22,7 @@ def process_hooks(arr: torch.Tensor):
         
 
 def tensor_to_image(x):
-    return to_pil_image(x.squeeze().permute(1, 2, 0).cpu().numpy(), mode='RGB')
+    return x.squeeze().permute(1, 2, 0).cpu()
 
 def generate_atlas(name):
     torch.set_default_device('cuda')
@@ -35,7 +35,7 @@ def generate_atlas(name):
     model.load_weights()
     model.eval()
     
-    batch = 5    
+    batch = 3    
     
     x = []
     hooks = []
@@ -56,7 +56,7 @@ def generate_atlas(name):
         x_max = maxs[0]
         y_max = maxs[1]
         
-        image = Image.new('RGB', (x_max, y_max))
+        image = Image.new('RGB', (x_max + 256, y_max + 256))
         for elem, coord in zip(x_lst, coordinate):
             img = tensor_to_image(elem[-1, ...])
             image.paste(img, (coord[0], coord[1]))
@@ -64,7 +64,52 @@ def generate_atlas(name):
         plt.imshow(image)
         plt.savefig(f'output/{name}.png')
         
+def generate_image(name="image"):
+    torch.set_default_device('cuda')
+    
+    diffusor = ForwardDiffusion()
+    model = Denoiser()
+    
+    
+    model.load_weights()
+    model.eval()     
+    with torch.no_grad():
+        sampler = DiffusionSampler(diffusor=diffusor)
+        x_lst = reversed(sampler(model, 1))
+        print(x_lst.size())
+        for t in range(0, diffusor.timesteps, diffusor.timesteps // 10):
+            img = tensor_to_image(x_lst[0, t, ...])
+            plt.imshow(img)
+            plt.show()
+        img = tensor_to_image(x_lst[0, -1, ...])
+        plt.imshow(img)
+        plt.savefig(f'output/{name}.png')
         
-
+        
+def generate_tests(*args, **kwargs):
+    torch.set_default_device('cuda')
+    
+    diffusor = ForwardDiffusion()
+    sampler = DiffusionSampler(diffusor)
+    
+    path = 'data/resized/resized/William_Turner_44.jpg'
+    raw_img = torchvision.io.decode_image(path, mode='RGB')
+    img_resized = torchvision.transforms.functional.resize(raw_img, size=(256, 256)).permute((1, 2, 0)).float().cuda()
+    img = img_resized / 255
+    
+    plt.imshow(img.cpu())
+    plt.show()
+    img = img * 2 - 1
+    imgs = []
+    
+    epsilon = torch.randn_like(img).cuda()
+    for t in range(diffusor.timesteps):
+        xt = diffusor.sqrt_alpha_bar[t] * img + diffusor.sqrt_one_minus_alpha_bar[t] * epsilon
+        imgs.append(sampler.denormalize(xt))
+    
+    for idx in range(0, len(imgs), 10):
+        plt.imshow(imgs[idx].cpu())
+        plt.show()
+        
 if __name__ == '__main__':
-    generate_atlas(f'noise')
+    generate_image(f'test')

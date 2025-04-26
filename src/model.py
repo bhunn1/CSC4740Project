@@ -9,10 +9,10 @@ from sklearn.decomposition import PCA
 
 TIMESTEPS = 1000 # Number of denoising timesteps the model samples from
 UNET_CHANNEL_SCALE = 64 # Every layer in the UNet will have Channel_Scale * layer_number channels
-UNET_BASE_DEPTH = 4 # Number of UNet down/up blocks (including bottleneck layer)
-BETA_SCHEDULE = (1e-4, 2e-2)
+UNET_BASE_DEPTH = 5 # Number of UNet down/up blocks (including bottleneck layer)
+BETA_SCHEDULE = (1e-4, 1e-2)
 LR = 1e-3 # Initial learning rate
-BATCH_SIZE = 32
+BATCH_SIZE = 16
 LR_PATIENCE=3 # Epoch patience of the learning rate scheduler, decreases lr after n epochs
 EPOCHS = 100 
 DECAY = 1e-6 # Weight decay for the optimizer
@@ -25,7 +25,7 @@ class ForwardDiffusion:
                 image_size=IMAGE_SIZE, 
                 timesteps=TIMESTEPS,
                 device='cuda',
-                schedule_type='linear'):
+                schedule_type='cosine'):
         self.device = device
         
         self.size = image_size

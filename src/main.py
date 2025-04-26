@@ -10,7 +10,12 @@ from petastorm.etl.dataset_metadata import materialize_dataset
 from petastorm.codecs import NdarrayCodec
 from petastorm.unischema import Unischema, UnischemaField, dict_to_spark_row
 from pyspark.sql.types import FloatType
-from model import train_generative
+import model as net
+from petastorm.transform import TransformSpec
+from torchvision import transforms
+import torch.nn as nn
+import torch.multiprocessing as mp
+import torch.distributed as dist
 
 
 # Opens and manages pyspark context, will run on localhost.
@@ -62,20 +67,63 @@ def transform_image(image_bytes, dims, channels):
     img = img * 2 - 1
     return img.numpy().astype(np.float32)
 
-def train_partition(_):
-                    
+def load_tensor(row):
+    transform = transforms.Compose(
+        [transforms.ToTensor()]
+    )
+    return transform(row['image'])
+
+def distributed_train(load=False, save=True, devices=1):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    mp.spawn(train_worker, nprocs=devices, args=(load, save, devices))
+
+def train_worker(rank, load, save, devices):
+    # Setup distributed process group
+    dist.init_process_group("nccl", rank=rank, world_size=devices)
+    torch.cuda.set_device(rank)
+    device = torch.device('cuda', rank)
+
+    transform_spec = TransformSpec(load_tensor)
     file = 'file:///' + os.getcwd() + '/data/parquet'
-    batch_size = 32
-    load_checkpoint = False
-    save_checkpoint = True
-    epochs_per_node = 100
+    
+    if not load:
+        model = net.Denoiser()
+        optim = torch.optim.Adam(model.parameters())
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, patience=5)
+        epochs = 0
+    else:
+        model, optim, scheduler, _ = net.load_training_checkpoint()
+    
+    model = model.to(device)
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
+
+    epochs = 100
+    loss_fn = nn.MSELoss()
+    diffuser = net.ForwardDiffusion()
+
+    # Shard_id is the rank of the current reader and shard_count
+    with DataLoader(
+        make_reader(
+            file,
+            num_epochs=epochs,
+            transform_spec=transform_spec,
+            shuffle_rows=True,
+            shard_count=devices,
+            shard_id=rank
+        ),
+        batch_size=64,
+    ) as trainloader:
+        net.train_one_epoch(model, optim, loss_fn, scheduler, diffuser, trainloader)
+
+    # Only rank 0 saves the model
+    if save and rank == 0:
+        model.module.save_weights()  # model.module because of DistributedDataParallel
+        net.save_training_checkpoint(model.module, optim, scheduler, epochs)
+
+    # Cleanup
+    dist.destroy_process_group()
         
-    reader = make_reader(file)
-    loader = DataLoader(reader, batch_size)
-    train_generative(loader, 
-                     epochs=epochs_per_node, 
-                     load_checkpoint=load_checkpoint,
-                     save_checkpoint=save_checkpoint)
 # Data is too large to put on git
 # the archive is unzipped in ./data/
 # link here: https://www.kaggle.com/datasets/ikarus777/best-artworks-of-all-time
@@ -123,9 +171,9 @@ if __name__ == '__main__':
             with materialize_dataset(sc, output_url, schema):
                 df.write.mode('overwrite').parquet(output_url)
 
-        workers = int(sc.sparkContext.getConf().get("spark.executor.instances", "1"))
-        processes = sc.sparkContext.parallelize([[] for _ in range(workers)], workers)
-        processes.foreach(train_partition)
-        
+        # workers = int(sc.sparkContext.getConf().get("spark.executor.instances", "1"))
+        # processes = sc.sparkContext.parallelize([[] for _ in range(workers)], workers)
+        # processes.foreach(train_partition)
+        distributed_train()
         
         

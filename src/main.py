@@ -80,14 +80,14 @@ def distributed_train(load=False, save=True, devices=1):
     os.environ['MASTER_PORT'] = '12355'
     mp.spawn(train_worker, nprocs=devices, args=(load, save, devices))
 
-def train_worker(rank, load, save, devices):
+def train_worker(rank, load, save, devices, prefix='file:///'):
     # Setup distributed process group
     dist.init_process_group("nccl", rank=rank, world_size=devices)
     torch.cuda.set_device(rank)
     device = torch.device('cuda', rank)
 
     transform_spec = TransformSpec(load_tensor)
-    file = 'file:///' + os.getcwd() + '/data/parquet'
+    file = prefix + os.getcwd() + '/data/parquet'
     
     # If resuming training, load the state values from the training checkpoint
     if not load:
@@ -102,7 +102,7 @@ def train_worker(rank, load, save, devices):
     model = model.to(device)
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
 
-    epochs = 10
+    epochs = 1
     
     # Mean Squared Error metric
     loss_fn = nn.MSELoss()

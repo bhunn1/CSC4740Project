@@ -1,9 +1,14 @@
-data/
+data/*
+!data/.gitkeep
+
 .vscode/
-weights/
 
 cache/*
 !cache/.folder
 src/__pycache__/
 
-output/
+output/*
+!output/.gitkeep
+
+weights/*
+!weights/.gitkeep

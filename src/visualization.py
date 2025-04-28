@@ -107,7 +107,5 @@ def generate_tests(*args, **kwargs):
         plt.show()
         
 if __name__ == '__main__':
-    generate_image()
-    
-    #for i in range(10):
-    #    generate_image().save(f'output/progress{i}.png')
+    for i in range(10):
+        generate_image().save(f'output/progress{i}.png')

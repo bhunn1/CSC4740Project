@@ -1,4 +1,4 @@
-from model import ForwardDiffusion, Denoiser, DiffusionSampler
+from model import ForwardDiffusion, Denoiser, DiffusionSampler, count_parameters
 import torch
 from matplotlib import pyplot as plt
 import matplotlib
@@ -37,7 +37,6 @@ def generate_atlas(name):
     
     batch = 5
     
-    x = []
     hooks = []
     with torch.no_grad():
         sampler = DiffusionSampler(diffusor=diffusor)
@@ -70,7 +69,6 @@ def generate_image():
     
     diffusor = ForwardDiffusion()
     model = Denoiser()
-    
     
     model.load_weights()
     model.eval()     
@@ -109,6 +107,7 @@ def generate_tests(*args, **kwargs):
         plt.show()
         
 if __name__ == '__main__':
+    generate_image()
     
-    for i in range(10):
-        generate_image().save(f'output/progress{i}.png')
+    #for i in range(10):
+    #    generate_image().save(f'output/progress{i}.png')

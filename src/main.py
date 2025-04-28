@@ -61,19 +61,18 @@ def read_images(sc: SparkSession, path: os.PathLike):
 def transform_image(image_bytes, dims, channels):
     raw_img = torch.frombuffer(image_bytes, dtype=torch.uint8).reshape((*dims, channels)).permute(2, 0, 1)
     if channels == 1:
-        raw_img = raw_img.repeat(3, 1, 1)
-        
+        raw_img = raw_img.expand(3, -1, -1)
     img_resized = torchvision.transforms.functional.resize(raw_img, size=(256, 256)).float()
     img = img_resized / 255
     img = img * 2 - 1
-    return img.numpy().astype(np.float32)
+    return img.permute(1, 2, 0).numpy().astype(np.float32)
 
 # Petastorm parquet format to tensor transformation
 def load_tensor(row):
     transform = transforms.Compose(
         [transforms.ToTensor()]
     )
-    return transform(row['image'])
+    return {'images': transform(row['images'])}
 
 # Host the torch multiprocess training routine
 def distributed_train(load=False, save=True, devices=1):
@@ -103,7 +102,7 @@ def train_worker(rank, load, save, devices):
     model = model.to(device)
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
 
-    epochs = 100
+    epochs = 10
     
     # Mean Squared Error metric
     loss_fn = nn.MSELoss()
@@ -119,9 +118,9 @@ def train_worker(rank, load, save, devices):
             transform_spec=transform_spec,
             shuffle_rows=True,
             shard_count=devices,
-            shard_id=rank
+            cur_shard=rank
         ),
-        batch_size=64,
+        batch_size=16,
     ) as trainloader:
         net.train_one_epoch(model, optim, loss_fn, scheduler, diffuser, trainloader)
 
@@ -167,7 +166,7 @@ if __name__ == '__main__':
             
             # Define parquet schema as a 3 channel multisized numpy array
             schema = Unischema('sparkData', [
-                UnischemaField('images', np.float32, (3, None, None), NdarrayCodec(), False),
+                UnischemaField('images', np.float32, (None, None, 3), NdarrayCodec(), False),
             ])
             
             # Turn the numpy arrays into spark row data

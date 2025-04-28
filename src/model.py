@@ -284,7 +284,10 @@ def train_one_epoch(model: nn.Module,
     total_loss = 0
     total_count = 0
     for x in dataloader:
-        x = x.to('cuda', non_blocking=True)
+        if type(x) is not dict:
+            x = {'images': x}
+            
+        x = x['images'].to('cuda', non_blocking=True)
             
         optim.zero_grad()
         
